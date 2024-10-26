@@ -1,18 +1,20 @@
 # app.py
 
-import os
 import streamlit as st
-import pandas as pd
-from qdrant_client import QdrantClient
-from qdrant_client.http.models import PointStruct, Distance
-from langchain.embeddings import OpenAIEmbeddings
-from langchain.vectorstores import Qdrant
-from langchain.chains import RetrievalQA
 from dotenv import load_dotenv
-from langgraph import LangGraph
-from gemini_llm import GeminiLLM  # Import the custom Gemini LLM
+from utils import (
+    logger,
+    create_qdrant_collection,
+    process_excel_file,
+    initialize_retrieval_qa,
+    create_graph,
+    GeminiLLM
+)
+from qdrant_client import QdrantClient
+from langchain.embeddings import OpenAIEmbeddings
+import os
 
-# Load environment variables
+# Load environment variables from .env file
 load_dotenv()
 
 # Configuration
@@ -20,97 +22,46 @@ QDRANT_API_KEY = os.getenv("QDRANT_API_KEY")
 QDRANT_URL = os.getenv("QDRANT_URL")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GEMINI_ENDPOINT = os.getenv("GEMINI_ENDPOINT")
-
-# Initialize Qdrant Client
-qdrant_client = QdrantClient(
-    url=QDRANT_URL,
-    api_key=QDRANT_API_KEY,
-    prefer_grpc=True  # Use gRPC for better performance
-)
-
-# Define Qdrant collection name
 COLLECTION_NAME = "excel_documents"
 
+# Validate essential environment variables
+if not all([QDRANT_API_KEY, QDRANT_URL, GEMINI_API_KEY, GEMINI_ENDPOINT]):
+    logger.critical("One or more essential environment variables are missing.")
+    st.error("Configuration error: Please check your environment variables.")
+    st.stop()
+
+# Initialize Qdrant Client with error handling
+try:
+    qdrant_client = QdrantClient(
+        url=QDRANT_URL,
+        api_key=QDRANT_API_KEY,
+        prefer_grpc=True  # Use gRPC for better performance
+    )
+    logger.info("Successfully connected to Qdrant Cloud.")
+except Exception as e:
+    logger.critical(f"Failed to connect to Qdrant Cloud: {e}")
+    st.error("Connection error: Unable to connect to Qdrant Cloud.")
+    st.stop()
+
 # Initialize LangChain embeddings
-embeddings = OpenAIEmbeddings()  # Continue using OpenAI embeddings or switch to Gemini-compatible embeddings if available
+try:
+    embeddings = OpenAIEmbeddings()
+    logger.info("Initialized OpenAI embeddings successfully.")
+except Exception as e:
+    logger.error(f"Failed to initialize embeddings: {e}")
+    st.error("Embedding error: Unable to initialize embeddings.")
+    st.stop()
 
-# Initialize LangGraph
-lang_graph = LangGraph()
+# Initialize Gemini LLM
+gemini_llm = GeminiLLM(
+    api_key=GEMINI_API_KEY,
+    endpoint=GEMINI_ENDPOINT
+)
 
-# Function to create collection if not exists
-def create_collection():
-    existing_collections = [col.name for col in qdrant_client.get_collections().collections]
-    if COLLECTION_NAME not in existing_collections:
-        qdrant_client.create_collection(
-            collection_name=COLLECTION_NAME,
-            vectors_config={
-                "size": embeddings.embedding_size,
-                "distance": Distance.COSINE
-            }
-        )
-        st.success(f"Collection '{COLLECTION_NAME}' created in Qdrant.")
-
-# Function to process and store Excel data
-def process_and_store(file):
-    try:
-        # Read Excel file
-        xls = pd.ExcelFile(file)
-        data_frames = {sheet: xls.parse(sheet) for sheet in xls.sheet_names}
-
-        documents = []
-        for sheet_name, df in data_frames.items():
-            # Convert each row to a string
-            for idx, row in df.iterrows():
-                text = row.to_json()
-                documents.append({
-                    "id": f"{sheet_name}_{idx}",
-                    "text": text
-                })
-
-        # Create embeddings
-        texts = [doc["text"] for doc in documents]
-        embedding_vectors = embeddings.embed_documents(texts)
-
-        # Prepare points for Qdrant
-        points = [
-            PointStruct(id=doc["id"], vector=vector, payload={"text": doc["text"]})
-            for doc, vector in zip(documents, embedding_vectors)
-        ]
-
-        # Upsert points into Qdrant
-        qdrant_client.upsert(collection_name=COLLECTION_NAME, points=points)
-        st.success(f"Successfully uploaded and stored {len(documents)} records from {file.name}.")
-
-    except Exception as e:
-        st.error(f"Error processing file {file.name}: {e}")
-
-# Function to initialize LangChain RetrievalQA with Gemini
-def initialize_qa():
-    # Initialize Qdrant as vector store
-    vector_store = Qdrant(
-        client=qdrant_client,
-        collection_name=COLLECTION_NAME,
-        embeddings=embeddings
-    )
-
-    # Initialize Gemini LLM
-    gemini_llm = GeminiLLM(
-        api_key=GEMINI_API_KEY,
-        endpoint=GEMINI_ENDPOINT
-    )
-
-    # Initialize RetrievalQA chain with Gemini
-    qa = RetrievalQA.from_chain_type(
-        llm=gemini_llm,
-        chain_type="stuff",
-        retriever=vector_store.as_retriever(),
-        verbose=True
-    )
-
-    return qa
-
-# Main Streamlit App
 def main():
+    """
+    Main function to run the Streamlit application.
+    """
     st.set_page_config(page_title="Excel RAG with Qdrant and Gemini", layout="wide")
     st.title("📊 Excel Retrieval-Augmented Generation (RAG) App with Gemini")
     st.write("""
@@ -126,9 +77,19 @@ def main():
 
     if st.sidebar.button("Process Files"):
         if uploaded_files:
-            create_collection()
-            for file in uploaded_files:
-                process_and_store(file)
+            try:
+                create_qdrant_collection(qdrant_client, COLLECTION_NAME, embeddings.embedding_size)
+                for file in uploaded_files:
+                    result = process_excel_file(file, embeddings, qdrant_client, COLLECTION_NAME)
+                    if result["status"] == "success":
+                        st.sidebar.success(result["message"])
+                    elif result["status"] == "warning":
+                        st.sidebar.warning(result["message"])
+                    elif result["status"] == "error":
+                        st.sidebar.error(result["message"])
+            except Exception as e:
+                logger.error(f"Error processing uploaded files: {e}")
+                st.sidebar.error(f"Error processing uploaded files: {e}")
         else:
             st.sidebar.warning("Please upload at least one Excel file.")
 
@@ -138,14 +99,18 @@ def main():
 
     if st.button("Get Answer"):
         if user_query:
-            qa = initialize_qa()
-            with st.spinner("Generating answer with Gemini..."):
-                try:
-                    answer = qa.run(user_query)
-                    st.success("**Answer:**")
-                    st.write(answer)
-                except Exception as e:
-                    st.error(f"Error generating answer: {e}")
+            qa = initialize_retrieval_qa(qdrant_client, COLLECTION_NAME, embeddings, gemini_llm)
+            if qa:
+                with st.spinner("Generating answer with Gemini..."):
+                    try:
+                        logger.info(f"Received user query: {user_query}")
+                        answer = qa.run(user_query)
+                        logger.info("Successfully generated answer.")
+                        st.success("**Answer:**")
+                        st.write(answer)
+                    except Exception as e:
+                        logger.error(f"Error generating answer: {e}")
+                        st.error(f"Error generating answer: {e}")
         else:
             st.warning("Please enter a query.")
 
@@ -153,10 +118,15 @@ def main():
     st.header("📈 Data Visualization with LangGraph")
     if st.button("Generate Graph"):
         try:
-            graph = lang_graph.create_graph(collection=COLLECTION_NAME, client=qdrant_client)
-            st.graphviz_chart(graph.source)
-            st.success("Graph generated successfully.")
+            logger.info("Generating data visualization graph.")
+            graph = create_graph(qdrant_client, COLLECTION_NAME)
+            if graph:
+                st.graphviz_chart(graph.source)
+                st.success("Graph generated successfully.")
+            else:
+                st.error("Failed to generate graph.")
         except Exception as e:
+            logger.error(f"Error generating graph: {e}")
             st.error(f"Error generating graph: {e}")
 
     # Footer
