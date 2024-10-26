@@ -4,5 +4,5 @@ openpyxl
 langchain
 qdrant-client
 langgraph
-openai
+requests
 python-dotenv
