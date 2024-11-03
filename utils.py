@@ -7,7 +7,7 @@ from typing import Optional, List
 import pandas as pd
 from qdrant_client import QdrantClient
 from qdrant_client.http.models import PointStruct, Distance
-from langchain.embeddings.openai import OpenAIEmbeddings  # Updated import
+from langchain.embeddings.openai import OpenAIEmbeddings  # Corrected import
 from langchain.vectorstores import Qdrant
 from langchain.llms.base import LLM
 from langchain.chains import RetrievalQA
