@@ -9,8 +9,8 @@ from qdrant_client import QdrantClient
 from qdrant_client.http.models import PointStruct, Distance
 from dotenv import load_dotenv
 from langgraph import LangGraph
-
 # Importing necessary classes from langchain
+
 try:
     # Import Qdrant from langchain.vectorstores (adjust if the module path has changed)
     from langchain.vectorstores.qdrant import Qdrant
